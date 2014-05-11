@@ -64,9 +64,10 @@ FILE *file;
 unsigned char *phdr_buffer;
 unsigned char *pdata_buffer = NULL;
 patch_info rampatch_patch_info;
-unsigned short rome_ver = ROME_VER_UNKNOWN;
+int rome_ver = ROME_VER_UNKNOWN;
 unsigned char gTlv_type;
-
+char *rampatch_file_path;
+char *nvm_file_path;
 
 /******************************************************************************
 **  Extern variables
@@ -76,6 +77,120 @@ extern uint8_t vnd_local_bd_addr[6];
 /*****************************************************************************
 **   Functions
 *****************************************************************************/
+
+int get_vs_hci_event(unsigned char *rsp)
+{
+    int err = 0, i, soc_id =0;
+    unsigned char paramlen = 0;
+
+    if( (rsp[EVENTCODE_OFFSET] == VSEVENT_CODE) || (rsp[EVENTCODE_OFFSET] == EVT_CMD_COMPLETE))
+        ALOGI("%s: Received HCI-Vendor Specific event", __FUNCTION__);
+    else {
+        ALOGI("%s: Failed to receive HCI-Vendor Specific event", __FUNCTION__);
+        err = -EIO;
+        goto failed;
+    }
+
+    ALOGI("%s: Parameter Length: 0x%x", __FUNCTION__, paramlen = rsp[EVT_PLEN]);
+    ALOGI("%s: Command response: 0x%x", __FUNCTION__, rsp[CMD_RSP_OFFSET]);
+    ALOGI("%s: Response type   : 0x%x", __FUNCTION__, rsp[RSP_TYPE_OFFSET]);
+
+    /* Check the status of the operation */
+    switch ( rsp[CMD_RSP_OFFSET] )
+    {
+        case EDL_CMD_REQ_RES_EVT:
+        ALOGI("%s: Command Request Response", __FUNCTION__);
+        switch(rsp[RSP_TYPE_OFFSET])
+        {
+            case EDL_PATCH_VER_RES_EVT:
+            case EDL_APP_VER_RES_EVT:
+                ALOGI("\t Current Product ID\t\t: 0x%08x",
+                    (unsigned int)(rsp[PATCH_PROD_ID_OFFSET +3] << 24 |
+                                        rsp[PATCH_PROD_ID_OFFSET+2] << 16 |
+                                        rsp[PATCH_PROD_ID_OFFSET+1] << 8 |
+                                        rsp[PATCH_PROD_ID_OFFSET]  ));
+
+                /* Patch Version indicates FW patch version */
+                ALOGI("\t Current Patch Version\t\t: 0x%04x",
+                    (unsigned short)(rsp[PATCH_PATCH_VER_OFFSET + 1] << 8 |
+                                            rsp[PATCH_PATCH_VER_OFFSET] ));
+
+                /* ROM Build Version indicates ROM build version like 1.0/1.1/2.0 */
+                ALOGI("\t Current ROM Build Version\t: 0x%04x", rome_ver =
+                    (int)(rsp[PATCH_ROM_BUILD_VER_OFFSET + 1] << 8 |
+                                            rsp[PATCH_ROM_BUILD_VER_OFFSET] ));
+
+                /* In case rome 1.0/1.1, there is no SOC ID version available */
+                if (paramlen - 10)
+                {
+                    ALOGI("\t Current SOC Version\t\t: 0x%08x", soc_id =
+                        (unsigned int)(rsp[PATCH_SOC_VER_OFFSET +3] << 24 |
+                                                rsp[PATCH_SOC_VER_OFFSET+2] << 16 |
+                                                rsp[PATCH_SOC_VER_OFFSET+1] << 8 |
+                                                rsp[PATCH_SOC_VER_OFFSET]  ));
+                }
+
+                /* Rome Chipset Version can be decided by Patch version and SOC version,
+                Upper 2 bytes will be used for Patch version and Lower 2 bytes will be
+                used for SOC as combination for BT host driver */
+                rome_ver = (rome_ver << 16) | (soc_id & 0x0000ffff);
+                break;
+            case EDL_TVL_DNLD_RES_EVT:
+            case EDL_CMD_EXE_STATUS_EVT:
+                switch (err = rsp[CMD_STATUS_OFFSET])
+                    {
+                    case HCI_CMD_SUCCESS:
+                        ALOGI("%s: Download Packet successfully!", __FUNCTION__);
+                        break;
+                    case PATCH_LEN_ERROR:
+                        ALOGI("%s: Invalid patch length argument passed for EDL PATCH "
+                        "SET REQ cmd", __FUNCTION__);
+                        break;
+                    case PATCH_VER_ERROR:
+                        ALOGI("%s: Invalid patch version argument passed for EDL PATCH "
+                        "SET REQ cmd", __FUNCTION__);
+                        break;
+                    case PATCH_CRC_ERROR:
+                        ALOGI("%s: CRC check of patch failed!!!", __FUNCTION__);
+                        break;
+                    case PATCH_NOT_FOUND:
+                        ALOGI("%s: Invalid patch data!!!", __FUNCTION__);
+                        break;
+                    case TLV_TYPE_ERROR:
+                        ALOGI("%s: TLV Type Error !!!", __FUNCTION__);
+                        break;
+                    default:
+                        ALOGI("%s: Undefined error (0x%x)", __FUNCTION__, err);
+                        break;
+                    }
+            break;
+        }
+        break;
+
+        case NVM_ACCESS_CODE:
+            ALOGI("%s: NVM Access Code!!!", __FUNCTION__);
+            err = HCI_CMD_SUCCESS;
+            break;
+        case EDL_SET_BAUDRATE_RSP_EVT:
+            /* Rome 1.1 has bug with the response, so it should ignore it. */
+            if (rsp[BAUDRATE_RSP_STATUS_OFFSET] != BAUDRATE_CHANGE_SUCCESS)
+            {
+                ALOGE("%s: Set Baudrate request failed - 0x%x", __FUNCTION__,
+                    rsp[CMD_STATUS_OFFSET]);
+                err = -1;
+            }
+            break;
+        default:
+            ALOGE("%s: Not a valid status!!!", __FUNCTION__);
+            err = -1;
+            break;
+    }
+
+failed:
+    return err;
+}
+
+
 /*
  * Read an VS HCI event from the given file descriptor.
  */
@@ -155,97 +270,6 @@ int hci_send_vs_cmd(int fd, unsigned char *cmd, unsigned char *rsp, int size)
     ALOGI("%s: Received HCI-Vendor Specific Event from SOC", __FUNCTION__);
 failed:
     return ret;
-}
-
-int get_vs_hci_event(unsigned char *rsp)
-{
-    int err = 0, i;
-
-    if( (rsp[EVENTCODE_OFFSET] == VSEVENT_CODE) || (rsp[EVENTCODE_OFFSET] == EVT_CMD_COMPLETE))
-        ALOGI("%s: Received HCI-Vendor Specific event", __FUNCTION__);
-    else {
-        ALOGI("%s: Failed to receive HCI-Vendor Specific event", __FUNCTION__);
-        err = -EIO;
-        goto failed;
-    }
-
-    ALOGI("%s: Command response: 0x%x", __FUNCTION__, rsp[CMD_RSP_OFFSET]);
-    ALOGI("%s: Response type   : 0x%x", __FUNCTION__, rsp[RSP_TYPE_OFFSET]);
-
-    /* Check the status of the operation */
-    switch ( rsp[CMD_RSP_OFFSET] )
-    {
-        case EDL_CMD_REQ_RES_EVT:
-        ALOGI("%s: Command Request Response", __FUNCTION__);
-        switch(rsp[RSP_TYPE_OFFSET])
-        {
-            case EDL_PATCH_VER_RES_EVT:
-            case EDL_APP_VER_RES_EVT:
-                ALOGI("\t Product ID: 0x%x",
-                    (unsigned int)(rsp[PATCH_PROD_ID_OFFSET +3] << 24 |
-                                        rsp[PATCH_PROD_ID_OFFSET+2] << 16 |
-                                        rsp[PATCH_PROD_ID_OFFSET+1] << 8 |
-                                        rsp[PATCH_PROD_ID_OFFSET]  ));
-                ALOGI("\t Current FW Version: 0x%x",
-                    (unsigned short)(rsp[PATCH_CURR_FW_VER_OFFSET + 1] << 8 |
-                                            rsp[PATCH_CURR_FW_VER_OFFSET] ));
-                ALOGI("\t Chipset Version: 0x%x",  rome_ver =
-                    (unsigned short)(rsp[PATCH_CHIPSET_VER_OFFSET + 1] << 8 |
-                                            rsp[PATCH_CHIPSET_VER_OFFSET] ));
-                break;
-            case EDL_TVL_DNLD_RES_EVT:
-            case EDL_CMD_EXE_STATUS_EVT:
-                switch (err = rsp[CMD_STATUS_OFFSET])
-                    {
-                    case HCI_CMD_SUCCESS:
-                        ALOGI("%s: Download Packet successfully!", __FUNCTION__);
-                        break;
-                    case PATCH_LEN_ERROR:
-                        ALOGI("%s: Invalid patch length argument passed for EDL PATCH "
-                        "SET REQ cmd", __FUNCTION__);
-                        break;
-                    case PATCH_VER_ERROR:
-                        ALOGI("%s: Invalid patch version argument passed for EDL PATCH "
-                        "SET REQ cmd", __FUNCTION__);
-                        break;
-                    case PATCH_CRC_ERROR:
-                        ALOGI("%s: CRC check of patch failed!!!", __FUNCTION__);
-                        break;
-                    case PATCH_NOT_FOUND:
-                        ALOGI("%s: Invalid patch data!!!", __FUNCTION__);
-                        break;
-                    case TLV_TYPE_ERROR:
-                        ALOGI("%s: TLV Type Error !!!", __FUNCTION__);
-                        break;
-                    default:
-                        ALOGI("%s: Undefined error (0x%x)", __FUNCTION__, err);
-                        break;
-                    }
-            break;
-        }
-        break;
-
-        case NVM_ACCESS_CODE:
-            ALOGI("%s: NVM Access Code!!!", __FUNCTION__);
-            err = HCI_CMD_SUCCESS;
-            break;
-        case EDL_SET_BAUDRATE_RSP_EVT:
-            /* Rome 1.1 has bug with the response, so it should ignore it. */
-            if (rsp[BAUDRATE_RSP_STATUS_OFFSET] != BAUDRATE_CHANGE_SUCCESS)
-            {
-                ALOGE("%s: Set Baudrate request failed - 0x%x", __FUNCTION__,
-                    rsp[CMD_STATUS_OFFSET]);
-                err = -1;
-            }
-            break;
-        default:
-            ALOGE("%s: Not a valid status!!!", __FUNCTION__);
-            err = -1;
-            break;
-    }
-
-failed:
-    return err;
 }
 
 void frame_hci_cmd_pkt(
@@ -561,7 +585,6 @@ static int rome_download_rampatch(int fd)
         c = fgetc (file);
         pdata_buffer[index++] = (unsigned char)c;
     } while (c != EOF);
-    fclose(file);
 
     /* Downloading patches in segments to controller */
     ret = rome_edl_patch_download_request(fd);
@@ -665,6 +688,7 @@ int rome_get_tlv_file(char *file_path)
     pdata_buffer = (unsigned char*) malloc (sizeof(char)*fileSize);
     if (pdata_buffer == NULL) {
         ALOGE("Allocated Memory failed");
+        fclose (pFile);
         return -1;
     }
 
@@ -675,7 +699,7 @@ int rome_get_tlv_file(char *file_path)
     fclose (pFile);
 
     if (readSize != fileSize) {
-        ALOGE("Read file size(%d) not matched with actual file size (%d bytes)",readSize,fileSize);
+        ALOGE("Read file size(%d) not matched with actual file size (%ld bytes)",readSize,fileSize);
         return -1;
     }
 
@@ -690,12 +714,14 @@ int rome_get_tlv_file(char *file_path)
         ALOGI("Length\t\t\t : %d bytes", (ptlv_header->tlv_length1) |
                                                     (ptlv_header->tlv_length2 << 8) |
                                                     (ptlv_header->tlv_length3 << 16));
+        ALOGI("Total Length\t\t\t : %d bytes", ptlv_header->tlv.patch.tlv_data_len);
+        ALOGI("Patch Data Length\t\t\t : %d bytes",ptlv_header->tlv.patch.tlv_patch_data_len);
         ALOGI("Signing Format Version\t : 0x%x", ptlv_header->tlv.patch.sign_ver);
         ALOGI("Signature Algorithm\t\t : 0x%x", ptlv_header->tlv.patch.sign_algorithm);
         ALOGI("Reserved\t\t\t : 0x%x", ptlv_header->tlv.patch.reserved1);
-        ALOGI("Product ID\t\t\t : 0x%x\n", ptlv_header->tlv.patch.prod_id);
-        ALOGI("Rom Build Version\t\t : 0x%x\n", ptlv_header->tlv.patch.build_ver);
-        ALOGI("Patch Version\t\t : 0x%x\n", ptlv_header->tlv.patch.patch_ver);
+        ALOGI("Product ID\t\t\t : 0x%04x\n", ptlv_header->tlv.patch.prod_id);
+        ALOGI("Rom Build Version\t\t : 0x%04x\n", ptlv_header->tlv.patch.build_ver);
+        ALOGI("Patch Version\t\t : 0x%04x\n", ptlv_header->tlv.patch.patch_ver);
         ALOGI("Reserved\t\t\t : 0x%x\n", ptlv_header->tlv.patch.reserved2);
         ALOGI("Patch Entry Address\t\t : 0x%x\n", (ptlv_header->tlv.patch.patch_entry_addr));
         ALOGI("====================================================");
@@ -731,7 +757,7 @@ int rome_get_tlv_file(char *file_path)
             }
 
             for(i =0;(i<nvm_ptr->tag_len && (i*3 + 2) <PRINT_BUF_SIZE);i++)
-                snprintf(data_buf, PRINT_BUF_SIZE, "%s%.02x ", data_buf, *(nvm_byte_ptr + i));
+                snprintf((char *) data_buf, PRINT_BUF_SIZE, "%s%.02x ", (char *)data_buf, *(nvm_byte_ptr + i));
 
             ALOGI("TAG Data\t\t\t : %s", data_buf);
 
@@ -803,15 +829,15 @@ int rome_tlv_dnld_req(int fd, int tlv_size)
     for(i=0;i<total_segment ;i++){
         /* In case of ROME 1.1, last rampatch segment command will not wait for
             command complete event */
-        wait_cc_evt = ((rome_ver == ROME_VER_1_1 ) && (gTlv_type == TLV_TYPE_PATCH )
+        wait_cc_evt = ((rome_ver >= ROME_VER_1_1) && (gTlv_type == TLV_TYPE_PATCH )
              && !remain_size && ((i+1) == total_segment))? FALSE: TRUE;
-        if(err = rome_tlv_dnld_segment(fd, i, MAX_SIZE_PER_TLV_SEGMENT, wait_cc_evt ) < 0)
+        if((err = rome_tlv_dnld_segment(fd, i, MAX_SIZE_PER_TLV_SEGMENT, wait_cc_evt )) < 0)
             goto error;
     }
 
     /* In case remain data still remain, last rampatch segment command will not wait
         for command complete event here */
-    wait_cc_evt = ((rome_ver == ROME_VER_1_1 ) && (gTlv_type == TLV_TYPE_PATCH )
+    wait_cc_evt = ((rome_ver >= ROME_VER_1_1) && (gTlv_type == TLV_TYPE_PATCH )
          && remain_size )? FALSE:TRUE;
 
     if(remain_size) err =rome_tlv_dnld_segment(fd, i, remain_size, wait_cc_evt);
@@ -826,7 +852,8 @@ int rome_download_tlv_file(int fd)
 
     /* Rampatch TLV file Downloading */
     pdata_buffer = NULL;
-    if((tlv_size = rome_get_tlv_file(ROME_RAMPATCH_TLV_PATH)) < 0)
+
+    if((tlv_size = rome_get_tlv_file(rampatch_file_path)) < 0)
         goto error;
 
     if((err =rome_tlv_dnld_req(fd, tlv_size)) <0 )
@@ -838,7 +865,7 @@ int rome_download_tlv_file(int fd)
     }
 
     /* NVM TLV file Downloading */
-    if((tlv_size = rome_get_tlv_file(ROME_NVM_TLV_PATH)) < 0)
+    if((tlv_size = rome_get_tlv_file(nvm_file_path)) < 0)
         goto error;
 
     if((err =rome_tlv_dnld_req(fd, tlv_size)) <0 )
@@ -1087,7 +1114,7 @@ int rome_1_0_nvm_tag_dnld(int fd)
     };
 #endif
 
-    ALOGI("%s: Start sending NVM Tags (ver: 0x%x)", __FUNCTION__, NVM_VERSION);
+    ALOGI("%s: Start sending NVM Tags (ver: 0x%x)", __FUNCTION__, (unsigned int) NVM_VERSION);
 
     for (i=0; (i < MAX_TAG_CMD) && (cmds[i][0] != TAG_END); i++)
     {
@@ -1274,6 +1301,27 @@ error:
 
 }
 
+static void enable_controller_log (int fd)
+{
+   int ret = 0;
+   /* VS command to enable controller logging to the HOST. By default it is enabled */
+   unsigned char cmd[6] = {0x01, 0x17, 0xFC, 0x02, 0x00, 0x01};
+   unsigned char rsp[HCI_MAX_EVENT_SIZE];
+   char value[PROPERTY_VALUE_MAX] = {'\0'};
+
+   property_get("enablebtsoclog", value, "0");
+   //value at cmd[5]: 1 - to enable, 0 - to disable
+   ret = (strcmp(value, "false") == 0) ? (cmd[5] = 0): (cmd[5] = 1);
+   ALOGI("%s: %d", __func__, ret);
+   if (ret) {
+     property_set("enablebtsoclog", "true");
+   }
+   ret = hci_send_vs_cmd(fd, (unsigned char *)cmd, rsp, 6);
+   if (ret != 6) {
+     ALOGE("%s: command failed", __func__);
+   }
+}
+
 int rome_soc_init(int fd, char *bdaddr)
 {
     int err = -1, size = 0;
@@ -1286,7 +1334,7 @@ int rome_soc_init(int fd, char *bdaddr)
         goto error;
     }
 
-    ALOGI("%s: Rome Version (0x%x)", __FUNCTION__, rome_ver);
+    ALOGI("%s: Rome Version (0x%08x)", __FUNCTION__, rome_ver);
 
     switch (rome_ver){
         case ROME_VER_1_0:
@@ -1336,25 +1384,56 @@ int rome_soc_init(int fd, char *bdaddr)
             }
             break;
         case ROME_VER_1_1:
-            {
-                /* Change baud rate 115.2 kbps to 3Mbps*/
-                err = rome_set_baudrate_req(fd);
-                if (err < 0) {
-                    ALOGE("%s: Baud rate change failed!", __FUNCTION__);
-                    goto error;
-                }
-                ALOGI("%s: Baud rate changed successfully ", __FUNCTION__);
+            rampatch_file_path = ROME_RAMPATCH_TLV_PATH;
+            nvm_file_path = ROME_NVM_TLV_PATH;
+            goto download;
+        case ROME_VER_1_3:
+            rampatch_file_path = ROME_RAMPATCH_TLV_1_0_3_PATH;
+            nvm_file_path = ROME_NVM_TLV_1_0_3_PATH;
+            goto download;
+        case ROME_VER_2_1:
+            rampatch_file_path = ROME_RAMPATCH_TLV_2_0_1_PATH;
+            nvm_file_path = ROME_NVM_TLV_2_0_1_PATH;
+            goto download;
+        case ROME_VER_3_0:
+            rampatch_file_path = ROME_RAMPATCH_TLV_3_0_0_PATH;
+            nvm_file_path = ROME_NVM_TLV_3_0_0_PATH;
 
-                /* Donwload TLV files (rampatch, NVM) */
-                err = rome_download_tlv_file(fd);
-                if (err < 0) {
-                    ALOGE("%s: Download TLV file failed!", __FUNCTION__);
-                    goto error;
-                }
-                ALOGI("%s: Download TLV file successfully ", __FUNCTION__);
-
-                /* HCI Reset will be implemented by Bluedroid Stack */
+download:
+            /* Change baud rate 115.2 kbps to 3Mbps*/
+            err = rome_set_baudrate_req(fd);
+            if (err < 0) {
+                ALOGE("%s: Baud rate change failed!", __FUNCTION__);
+                goto error;
             }
+            ALOGI("%s: Baud rate changed successfully ", __FUNCTION__);
+
+            /* Donwload TLV files (rampatch, NVM) */
+            err = rome_download_tlv_file(fd);
+            if (err < 0) {
+                ALOGE("%s: Download TLV file failed!", __FUNCTION__);
+                goto error;
+            }
+            ALOGI("%s: Download TLV file successfully ", __FUNCTION__);
+
+            /* This function sends a vendor specific command to enable/disable
+             * controller logs on need. Once the command is received to the SOC,
+             * It would start sending cotroller's print strings and LMP RX/TX
+             * packets to the HOST (over the UART) which will be logged in QXDM.
+             * The property 'enablebtsoclog' used to send this command on BT init
+             * sequence.
+             */
+            enable_controller_log(fd);
+
+            /* Perform HCI reset here*/
+            err = rome_hci_reset_req(fd);
+            if ( err <0 ) {
+                ALOGE("HCI Reset Failed !!");
+                goto error;
+            }
+
+            ALOGI("HCI Reset is done\n");
+
             break;
         case ROME_VER_UNKNOWN:
         default:

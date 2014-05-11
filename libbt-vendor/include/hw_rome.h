@@ -49,8 +49,9 @@
 
 #define P_ID_OFFSET                                     (0)
 #define HCI_CMD_IND                                   (1)
-#define EVENTCODE_OFFSET                         (1)
-#define PLEN                                                   (2)
+#define EVENTCODE_OFFSET                      (1)
+#define EVT_PLEN                                             (2)
+#define PLEN                                                       (3)
 #define CMD_RSP_OFFSET                             (3)
 #define RSP_TYPE_OFFSET                            (4)
 #define BAUDRATE_RSP_STATUS_OFFSET    (4)
@@ -67,8 +68,9 @@
 #define VSEVENT_CODE                                 (0xFF)
 #define HC_VS_MAX_CMD_EVENT                 (0xFF)
 #define PATCH_PROD_ID_OFFSET                (5)
-#define PATCH_CURR_FW_VER_OFFSET       (9)
-#define PATCH_CHIPSET_VER_OFFSET        (11)
+#define PATCH_PATCH_VER_OFFSET            (9)
+#define PATCH_ROM_BUILD_VER_OFFSET       (11)
+#define PATCH_SOC_VER_OFFSET             (13)
 #define MAX_SIZE_PER_TLV_SEGMENT        (243)
 
 /* VS Opcode */
@@ -133,6 +135,13 @@
 #define ROME_FW_PATH        "/system/etc/firmware/rampatch.img"
 #define ROME_RAMPATCH_TLV_PATH      "/system/etc/firmware/rampatch_tlv.img"
 #define ROME_NVM_TLV_PATH         "/system/etc/firmware/nvm_tlv.bin"
+#define ROME_RAMPATCH_TLV_1_0_3_PATH    "/system/etc/firmware/rampatch_tlv_1.3.tlv"
+#define ROME_NVM_TLV_1_0_3_PATH         "/system/etc/firmware/nvm_tlv_1.3.bin"
+#define ROME_RAMPATCH_TLV_2_0_1_PATH    "/system/etc/firmware/rampatch_tlv_2.1.tlv"
+#define ROME_NVM_TLV_2_0_1_PATH         "/system/etc/firmware/nvm_tlv_2.1.bin"
+#define ROME_RAMPATCH_TLV_3_0_0_PATH    "/system/etc/firmware/rampatch_tlv_3.0.tlv"
+#define ROME_NVM_TLV_3_0_0_PATH         "/system/etc/firmware/nvm_tlv_3.0.bin"
+
 
 /******************************************************************************
 **  Local type definitions
@@ -153,6 +162,8 @@ typedef struct {
 } __attribute__ ((packed)) patch_info;
 
 typedef struct {
+    unsigned int  tlv_data_len;
+    unsigned int  tlv_patch_data_len;
     unsigned char sign_ver;
     unsigned char sign_algorithm;
     unsigned short reserved1;
@@ -182,6 +193,7 @@ typedef struct {
     }tlv;
 } __attribute__ ((packed)) tlv_patch_info;
 
+
 enum{
     BAUDRATE_115200     = 0x00,
     BAUDRATE_57600       = 0x01,
@@ -207,8 +219,24 @@ enum{
 };
 
 enum{
+    ROME_PATCH_VER_0100 = 0x0100,
+    ROME_PATCH_VER_0101 = 0x0101,
+    ROME_PATCH_VER_0200 = 0x0200,
+    ROME_PATCH_VER_0300 = 0x0300
+ };
+
+enum{
+    ROME_SOC_ID_00 = 0x00000000,
+    ROME_SOC_ID_11 = 0x00000011,
+    ROME_SOC_ID_22 = 0x00000022,
+};
+
+enum{
     ROME_VER_UNKNOWN = 0,
-    ROME_VER_1_0 = 0x0100,
-    ROME_VER_1_1 = 0x0101
+    ROME_VER_1_0 = ((ROME_PATCH_VER_0100 << 16 ) | ROME_SOC_ID_00 ),
+    ROME_VER_1_1 = ((ROME_PATCH_VER_0101 << 16 ) | ROME_SOC_ID_00 ),
+    ROME_VER_1_3 = ((ROME_PATCH_VER_0200 << 16 ) | ROME_SOC_ID_00 ),
+    ROME_VER_2_1 = ((ROME_PATCH_VER_0200 << 16 ) | ROME_SOC_ID_11 ),
+    ROME_VER_3_0 = ((ROME_PATCH_VER_0300 << 16 ) | ROME_SOC_ID_22 )
 };
 #endif /* HW_ROME_H */
